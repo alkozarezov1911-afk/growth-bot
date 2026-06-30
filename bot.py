@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
@@ -8,10 +9,19 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 dp = Dispatcher()
 
-# Временное хранилище целей
-user_goals = {}
+# --- БАЗА ДАННЫХ ---
+conn = sqlite3.connect("database.db")
+cursor = conn.cursor()
 
-# Кнопка "Начать"
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    goal TEXT
+)
+""")
+conn.commit()
+
+# --- КНОПКА ---
 start_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🚀 Начать")]
@@ -38,12 +48,16 @@ async def ask_goal(message: Message):
 
 @dp.message()
 async def save_goal(message: Message):
-    user_goals[message.from_user.id] = message.text
-    
+    cursor.execute(
+        "INSERT OR REPLACE INTO users (user_id, goal) VALUES (?, ?)",
+        (message.from_user.id, message.text)
+    )
+    conn.commit()
+
     await message.answer(
         f"✅ Цель сохранена:\n\n"
         f"🎯 {message.text}\n\n"
-        "Скоро начнём работать над ней."
+        "Теперь она сохранена в базе данных."
     )
 
 async def main():
