@@ -1,8 +1,16 @@
 import asyncio
 import os
 import psycopg2
+from datetime import date
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -18,6 +26,7 @@ dp = Dispatcher(storage=storage)
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
+# --- Таблицы ---
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
@@ -34,37 +43,48 @@ CREATE TABLE IF NOT EXISTS habits (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS habit_logs (
+    id SERIAL PRIMARY KEY,
+    habit_id INTEGER REFERENCES habits(id) ON DELETE CASCADE,
+    log_date DATE NOT NULL
+)
+""")
+
 conn.commit()
 
-# --- Состояния ---
+# --- FSM ---
 class Form(StatesGroup):
     waiting_for_goal = State()
     waiting_for_habit = State()
 
-# --- Кнопка ---
+# --- Клавиатура ---
 start_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🚀 Начать")]
-    ],
+    keyboard=[[KeyboardButton(text="🚀 Начать")]],
     resize_keyboard=True
 )
 
+# =========================
+# START
+# =========================
+
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def start(message: Message):
     await message.answer(
-        "Привет 👋\n\n"
-        "Я твой бот личностного роста.\n"
-        "Я помогу тебе сфокусироваться на главной цели.\n\n"
+        "👋 Добро пожаловать в систему личного роста.\n\n"
+        "Здесь ты можешь:\n"
+        "• Установить цель\n"
+        "• Создать привычки\n"
+        "• Отмечать выполнение\n"
+        "• Смотреть прогресс\n\n"
         "Готов начать?",
         reply_markup=start_keyboard
     )
 
 @dp.message(F.text == "🚀 Начать")
-async def ask_goal(message: Message, state: FSMContext):
+async def set_goal(message: Message, state: FSMContext):
     await state.set_state(Form.waiting_for_goal)
-    await message.answer(
-        "Напиши свою главную цель на ближайшие 3 месяца:"
-    )
+    await message.answer("Напиши свою главную цель на 3 месяца:")
 
 @dp.message(Form.waiting_for_goal)
 async def save_goal(message: Message, state: FSMContext):
@@ -75,11 +95,12 @@ async def save_goal(message: Message, state: FSMContext):
     )
     conn.commit()
 
-    await message.answer(
-        f"✅ Цель сохранена:\n\n🎯 {message.text}"
-    )
-
+    await message.answer(f"✅ Цель сохранена:\n\n🎯 {message.text}")
     await state.clear()
+
+# =========================
+# GOAL
+# =========================
 
 @dp.message(Command("goal"))
 async def show_goal(message: Message):
@@ -90,20 +111,18 @@ async def show_goal(message: Message):
     result = cursor.fetchone()
 
     if result:
-        await message.answer(
-            f"🎯 Твоя текущая цель:\n\n{result[0]}"
-        )
+        await message.answer(f"🎯 Твоя цель:\n\n{result[0]}")
     else:
-        await message.answer(
-            "У тебя пока нет сохранённой цели.\n\nНажми 🚀 Начать"
-        )
+        await message.answer("У тебя пока нет цели. Нажми 🚀 Начать")
+
+# =========================
+# HABITS
+# =========================
 
 @dp.message(Command("addhabit"))
 async def add_habit(message: Message, state: FSMContext):
     await state.set_state(Form.waiting_for_habit)
-    await message.answer(
-        "Напиши название новой привычки:"
-    )
+    await message.answer("Напиши название новой привычки:")
 
 @dp.message(Form.waiting_for_habit)
 async def save_habit(message: Message, state: FSMContext):
@@ -113,10 +132,7 @@ async def save_habit(message: Message, state: FSMContext):
     )
     conn.commit()
 
-    await message.answer(
-        f"✅ Привычка добавлена:\n\n📌 {message.text}"
-    )
-
+    await message.answer(f"✅ Привычка добавлена:\n\n📌 {message.text}")
     await state.clear()
 
 @dp.message(Command("habits"))
@@ -131,11 +147,73 @@ async def list_habits(message: Message):
         await message.answer("У тебя пока нет привычек.")
         return
 
-    response = "📋 Твои привычки:\n\n"
+    text = "📋 Твои привычки:\n\n"
     for habit in habits:
-        response += f"{habit[0]}. {habit[1]}\n"
+        text += f"{habit[0]}. {habit[1]}\n"
 
-    await message.answer(response)
+    await message.answer(text)
+
+# =========================
+# CHECK HABIT
+# =========================
+
+@dp.message(Command("check"))
+async def check_habit(message: Message):
+    cursor.execute(
+        "SELECT id, name FROM habits WHERE user_id = %s",
+        (message.from_user.id,)
+    )
+    habits = cursor.fetchall()
+
+    if not habits:
+        await message.answer("У тебя нет привычек.")
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=habit[1],
+                    callback_data=f"check_{habit[0]}"
+                )
+            ] for habit in habits
+        ]
+    )
+
+    await message.answer("Выбери привычку для отметки:", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("check_"))
+async def mark_habit(callback: CallbackQuery):
+    habit_id = int(callback.data.split("_")[1])
+
+    cursor.execute(
+        "INSERT INTO habit_logs (habit_id, log_date) VALUES (%s, %s)",
+        (habit_id, date.today())
+    )
+    conn.commit()
+
+    await callback.answer("✅ Отмечено")
+    await callback.message.edit_text("✅ Привычка отмечена на сегодня")
+
+# =========================
+# STATS
+# =========================
+
+@dp.message(Command("stats"))
+async def stats(message: Message):
+    cursor.execute("""
+        SELECT COUNT(*) FROM habit_logs hl
+        JOIN habits h ON h.id = hl.habit_id
+        WHERE h.user_id = %s AND hl.log_date = %s
+    """, (message.from_user.id, date.today()))
+
+    today_count = cursor.fetchone()[0]
+
+    await message.answer(
+        f"📊 Сегодня выполнено привычек: {today_count}"
+    )
+
+# =========================
 
 async def main():
     bot = Bot(token=TOKEN)
