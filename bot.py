@@ -14,12 +14,16 @@ dp = Dispatcher()
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
+# --- Таблица пользователей ---
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
     goal TEXT
 )
-""")cursor.execute("""
+""")
+
+# --- Таблица привычек ---
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS habits (
     id SERIAL PRIMARY KEY,
     user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
@@ -27,7 +31,7 @@ CREATE TABLE IF NOT EXISTS habits (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
-conn.commit()
+
 conn.commit()
 
 # --- Кнопка ---
@@ -65,26 +69,64 @@ async def show_goal(message: Message):
             "У тебя пока нет сохранённой цели.\n\nНажми 🚀 Начать"
         )
 
-@dp.message(F.text == "🚀 Начать")
-async def ask_goal(message: Message):
+@dp.message(Command("addhabit"))
+async def add_habit(message: Message):
     await message.answer(
-        "Отлично 💪\n\n"
-        "Напиши свою главную цель на ближайшие 3 месяца:"
+        "Напиши название новой привычки:"
     )
 
-@dp.message()
-async def save_goal(message: Message):
+@dp.message(Command("habits"))
+async def list_habits(message: Message):
     cursor.execute(
-        "INSERT INTO users (user_id, goal) VALUES (%s, %s) "
-        "ON CONFLICT (user_id) DO UPDATE SET goal = EXCLUDED.goal",
-        (message.from_user.id, message.text)
+        "SELECT id, name FROM habits WHERE user_id = %s",
+        (message.from_user.id,)
+    )
+    habits = cursor.fetchall()
+
+    if not habits:
+        await message.answer("У тебя пока нет привычек.")
+        return
+
+    response = "📋 Твои привычки:\n\n"
+    for habit in habits:
+        response += f"{habit[0]}. {habit[1]}\n"
+
+    await message.answer(response)
+
+@dp.message()
+async def handle_text(message: Message):
+    text = message.text
+
+    # Проверяем есть ли цель
+    cursor.execute(
+        "SELECT goal FROM users WHERE user_id = %s",
+        (message.from_user.id,)
+    )
+    existing_goal = cursor.fetchone()
+
+    # Если цели нет — сохраняем как цель
+    if not existing_goal:
+        cursor.execute(
+            "INSERT INTO users (user_id, goal) VALUES (%s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET goal = EXCLUDED.goal",
+            (message.from_user.id, text)
+        )
+        conn.commit()
+
+        await message.answer(
+            f"✅ Цель сохранена:\n\n🎯 {text}"
+        )
+        return
+
+    # Иначе — добавляем как привычку
+    cursor.execute(
+        "INSERT INTO habits (user_id, name) VALUES (%s, %s)",
+        (message.from_user.id, text)
     )
     conn.commit()
 
     await message.answer(
-        f"✅ Цель сохранена:\n\n"
-        f"🎯 {message.text}\n\n"
-        "Теперь она хранится в PostgreSQL 💾"
+        f"✅ Привычка добавлена:\n\n📌 {text}"
     )
 
 async def main():
