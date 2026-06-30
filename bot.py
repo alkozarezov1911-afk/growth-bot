@@ -86,4 +86,4 @@ start_keyboard = ReplyKeyboardMarkup(
 async def start(message: Message):
     await message.answer(
         "👋 Добро пожаловать в систему личного роста.\n\n"
-        "Ты будешь двигаться к своей цели через ежедневные привычки.\n\n"
+        "Ты будешь двигаться к своей цели через ежедневные привычки.\n\n")
