@@ -46,7 +46,22 @@ async def ask_goal(message: Message):
         "Напиши свою главную цель на ближайшие 3 месяца:"
     )
 
-@dp.message()
+@dp.message(Command("goal"))
+async def show_goal(message: Message):
+    cursor.execute(
+        "SELECT goal FROM users WHERE user_id = ?",
+        (message.from_user.id,)
+    )
+    result = cursor.fetchone()
+
+    if result:
+        await message.answer(
+            f"🎯 Твоя текущая цель:\n\n{result[0]}"
+        )
+    else:
+        await message.answer(
+            "У тебя пока нет сохранённой цели.\n\nНажми 🚀 Начать"
+        )@dp.message()
 async def save_goal(message: Message):
     cursor.execute(
         "INSERT OR REPLACE INTO users (user_id, goal) VALUES (?, ?)",
