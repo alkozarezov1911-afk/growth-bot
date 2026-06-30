@@ -26,7 +26,6 @@ dp = Dispatcher(storage=storage)
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
-# --- Таблицы ---
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
@@ -53,12 +52,29 @@ CREATE TABLE IF NOT EXISTS habit_logs (
 
 conn.commit()
 
-# --- FSM ---
+# =========================
+# FSM
+# =========================
+
 class Form(StatesGroup):
     waiting_for_goal = State()
     waiting_for_habit = State()
 
-# --- Клавиатура ---
+# =========================
+# Клавиатуры
+# =========================
+
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🎯 Моя цель")],
+        [KeyboardButton(text="➕ Добавить привычку")],
+        [KeyboardButton(text="✅ Отметить привычку")],
+        [KeyboardButton(text="📋 Мои привычки")],
+        [KeyboardButton(text="📊 Статистика")],
+    ],
+    resize_keyboard=True
+)
+
 start_keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🚀 Начать")]],
     resize_keyboard=True
@@ -72,17 +88,13 @@ start_keyboard = ReplyKeyboardMarkup(
 async def start(message: Message):
     await message.answer(
         "👋 Добро пожаловать в систему личного роста.\n\n"
-        "Здесь ты можешь:\n"
-        "• Установить цель\n"
-        "• Создать привычки\n"
-        "• Отмечать выполнение\n"
-        "• Смотреть прогресс\n\n"
+        "Здесь ты будешь двигаться к своей цели через ежедневные привычки.\n\n"
         "Готов начать?",
         reply_markup=start_keyboard
     )
 
 @dp.message(F.text == "🚀 Начать")
-async def set_goal(message: Message, state: FSMContext):
+async def ask_goal(message: Message, state: FSMContext):
     await state.set_state(Form.waiting_for_goal)
     await message.answer("Напиши свою главную цель на 3 месяца:")
 
@@ -95,14 +107,19 @@ async def save_goal(message: Message, state: FSMContext):
     )
     conn.commit()
 
-    await message.answer(f"✅ Цель сохранена:\n\n🎯 {message.text}")
+    await message.answer(
+        f"✅ Цель сохранена:\n\n🎯 {message.text}\n\n"
+        "Теперь создай первую привычку 👇",
+        reply_markup=main_menu
+    )
+
     await state.clear()
 
 # =========================
-# GOAL
+# МЕНЮ
 # =========================
 
-@dp.message(Command("goal"))
+@dp.message(F.text == "🎯 Моя цель")
 async def show_goal(message: Message):
     cursor.execute(
         "SELECT goal FROM users WHERE user_id = %s",
@@ -113,13 +130,9 @@ async def show_goal(message: Message):
     if result:
         await message.answer(f"🎯 Твоя цель:\n\n{result[0]}")
     else:
-        await message.answer("У тебя пока нет цели. Нажми 🚀 Начать")
+        await message.answer("Сначала установи цель через 🚀 Начать")
 
-# =========================
-# HABITS
-# =========================
-
-@dp.message(Command("addhabit"))
+@dp.message(F.text == "➕ Добавить привычку")
 async def add_habit(message: Message, state: FSMContext):
     await state.set_state(Form.waiting_for_habit)
     await message.answer("Напиши название новой привычки:")
@@ -132,10 +145,14 @@ async def save_habit(message: Message, state: FSMContext):
     )
     conn.commit()
 
-    await message.answer(f"✅ Привычка добавлена:\n\n📌 {message.text}")
+    await message.answer(
+        f"✅ Привычка добавлена:\n\n📌 {message.text}",
+        reply_markup=main_menu
+    )
+
     await state.clear()
 
-@dp.message(Command("habits"))
+@dp.message(F.text == "📋 Мои привычки")
 async def list_habits(message: Message):
     cursor.execute(
         "SELECT id, name FROM habits WHERE user_id = %s",
@@ -153,11 +170,7 @@ async def list_habits(message: Message):
 
     await message.answer(text)
 
-# =========================
-# CHECK HABIT
-# =========================
-
-@dp.message(Command("check"))
+@dp.message(F.text == "✅ Отметить привычку")
 async def check_habit(message: Message):
     cursor.execute(
         "SELECT id, name FROM habits WHERE user_id = %s",
@@ -171,16 +184,12 @@ async def check_habit(message: Message):
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=habit[1],
-                    callback_data=f"check_{habit[0]}"
-                )
-            ] for habit in habits
+            [InlineKeyboardButton(text=habit[1], callback_data=f"check_{habit[0]}")]
+            for habit in habits
         ]
     )
 
-    await message.answer("Выбери привычку для отметки:", reply_markup=keyboard)
+    await message.answer("Выбери привычку:", reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("check_"))
 async def mark_habit(callback: CallbackQuery):
@@ -195,11 +204,7 @@ async def mark_habit(callback: CallbackQuery):
     await callback.answer("✅ Отмечено")
     await callback.message.edit_text("✅ Привычка отмечена на сегодня")
 
-# =========================
-# STATS
-# =========================
-
-@dp.message(Command("stats"))
+@dp.message(F.text == "📊 Статистика")
 async def stats(message: Message):
     cursor.execute("""
         SELECT COUNT(*) FROM habit_logs hl
