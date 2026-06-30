@@ -17,14 +17,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
-
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-
 
 # =========================
 # DATABASE
@@ -38,8 +36,8 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
     goal TEXT,
-    first_name TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    xp INTEGER DEFAULT 0,
+    first_name TEXT
 )
 """)
 
@@ -50,44 +48,49 @@ CREATE TABLE IF NOT EXISTS habits (
     name TEXT NOT NULL,
     current_streak INTEGER DEFAULT 0,
     best_streak INTEGER DEFAULT 0,
-    last_check DATE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    last_check DATE
 )
 """)
 
-# На случай если таблицы уже были созданы раньше без этих колонок
-cursor.execute("""
-ALTER TABLE users
-ADD COLUMN IF NOT EXISTS first_name TEXT
-""")
+# =========================
+# LEVEL SYSTEM
+# =========================
 
-cursor.execute("""
-ALTER TABLE users
-ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-""")
+def get_level_data(xp: int):
+    levels = [
+        (0, "🥉 Новичок"),
+        (100, "🥈 Дисциплинированный"),
+        (300, "🥇 Машина"),
+        (700, "🏆 Мастер"),
+        (1500, "👑 Легенда"),
+    ]
 
-cursor.execute("""
-ALTER TABLE habits
-ADD COLUMN IF NOT EXISTS current_streak INTEGER DEFAULT 0
-""")
+    current_level = levels[0]
+    next_level = None
 
-cursor.execute("""
-ALTER TABLE habits
-ADD COLUMN IF NOT EXISTS best_streak INTEGER DEFAULT 0
-""")
+    for i in range(len(levels)):
+        if xp >= levels[i][0]:
+            current_level = levels[i]
+            if i + 1 < len(levels):
+                next_level = levels[i + 1]
 
-cursor.execute("""
-ALTER TABLE habits
-ADD COLUMN IF NOT EXISTS last_check DATE
-""")
+    return current_level, next_level
+
+
+def progress_bar(current, total, length=10):
+    if total == 0:
+        return "█" * length
+    filled = int(length * current / total)
+    return "█" * filled + "░" * (length - filled)
 
 
 # =========================
 # FSM
 # =========================
 
-class Form(StatesGroup):
-    waiting_for_goal = State()
+class CoachStates(StatesGroup):
+    choosing_category = State()
+    choosing_money_direction = State()
     waiting_for_habit = State()
 
 
@@ -96,9 +99,7 @@ class Form(StatesGroup):
 # =========================
 
 start_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🚀 Начать")]
-    ],
+    keyboard=[[KeyboardButton(text="🚀 Начать")]],
     resize_keyboard=True
 )
 
@@ -109,59 +110,49 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="✅ Отметить привычку")],
         [KeyboardButton(text="📋 Мои привычки")],
         [KeyboardButton(text="📊 Статистика")],
+        [KeyboardButton(text="🏅 Мой уровень")],
     ],
     resize_keyboard=True
 )
 
+money_directions_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="⬆ Увеличить доход на работе")],
+        [KeyboardButton(text="🚀 Новый источник дохода")],
+        [KeyboardButton(text="📈 Запустить проект")],
+        [KeyboardButton(text="🧠 Освоить навык")],
+        [KeyboardButton(text="💳 Финансовая дисциплина")],
+    ],
+    resize_keyboard=True
+)
 
 # =========================
-# HELPERS
+# MORNING ROUTINE
 # =========================
-
-def get_user_goal(user_id: int):
-    cursor.execute(
-        "SELECT goal FROM users WHERE user_id = %s",
-        (user_id,)
-    )
-    result = cursor.fetchone()
-    return result[0] if result else None
-
-
-def get_best_streak(user_id: int):
-    cursor.execute(
-        "SELECT MAX(best_streak) FROM habits WHERE user_id = %s",
-        (user_id,)
-    )
-    result = cursor.fetchone()
-    return result[0] or 0
-
-
-async def send_morning_message_to_user(bot: Bot, user_id: int, first_name: str, goal: str):
-    best_streak = get_best_streak(user_id)
-
-    name = first_name if first_name else "друг"
-
-    text = (
-        f"☀️ Доброе утро, {name}!\n\n"
-        f"🎯 Твоя цель:\n{goal if goal else 'Пока не установлена'}\n\n"
-        f"🔥 Твой лучший streak: {best_streak} дней\n\n"
-        "Сегодня не нужно менять всю жизнь.\n"
-        "Достаточно сделать маленькое действие и не прервать движение.\n\n"
-        "Вечером не забудь отметить привычки ✅"
-    )
-
-    try:
-        await bot.send_message(user_id, text, reply_markup=main_menu)
-    except Exception as e:
-        print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-
 
 async def morning_broadcast(bot: Bot):
     cursor.execute("SELECT user_id, first_name, goal FROM users")
     users = cursor.fetchall()
 
     for user_id, first_name, goal in users:
-        await send_morning_message_to_user(bot, user_id, first_name, goal)
+        cursor.execute(
+            "SELECT MAX(best_streak) FROM habits WHERE user_id = %s",
+            (user_id,)
+        )
+        best = cursor.fetchone()[0] or 0
+
+        text = (
+            f"☀ Доброе утро, {first_name or ''}!\n\n"
+            f"🎯 Твоя цель: {goal}\n\n"
+            f"🔥 Лучший streak: {best} дней\n\n"
+            "Сегодня главное — сделать хотя бы 1 шаг.\n"
+            "Вечером не забудь отметить привычки ✅"
+        )
+
+        try:
+            await bot.send_message(user_id, text, reply_markup=main_menu)
+        except:
+            pass
 
 
 # =========================
@@ -169,54 +160,80 @@ async def morning_broadcast(bot: Bot):
 # =========================
 
 @dp.message(Command("start"))
-async def start(message: Message):
+async def start(message: Message, state: FSMContext):
+    await state.set_state(CoachStates.choosing_category)
+
     await message.answer(
-        "👋 Добро пожаловать в систему личного роста.\n\n"
-        "Здесь ты будешь двигаться к своей цели через ежедневные привычки.\n\n"
-        "Как это работает:\n"
-        "1. Ставишь цель на 3 месяца\n"
-        "2. Создаёшь 1–5 привычек\n"
-        "3. Каждый день отмечаешь выполнение\n"
-        "4. Следишь за серией и прогрессом\n\n"
-        "Готов начать?",
-        reply_markup=start_keyboard
+        "👋 Добро пожаловать в коуч‑режим.\n\n"
+        "В какой сфере твоя цель?",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="💰 Деньги")]],
+            resize_keyboard=True
+        )
     )
 
 
-@dp.message(F.text == "🚀 Начать")
-async def ask_goal(message: Message, state: FSMContext):
-    await state.set_state(Form.waiting_for_goal)
-
-    await message.answer(
-        "🎯 Напиши свою главную цель на ближайшие 3 месяца.\n\n"
-        "Примеры:\n"
-        "• Увеличить доход до 200 000 ₽\n"
-        "• Похудеть на 7 кг\n"
-        "• Запустить свой проект\n"
-        "• Читать каждый день\n\n"
-        "Напиши цель одним сообщением:"
-    )
+@dp.message(CoachStates.choosing_category, F.text == "💰 Деньги")
+async def choose_money_direction(message: Message, state: FSMContext):
+    await state.set_state(CoachStates.choosing_money_direction)
+    await message.answer("Что именно ты хочешь?", reply_markup=money_directions_keyboard)
 
 
-@dp.message(Form.waiting_for_goal)
-async def save_goal(message: Message, state: FSMContext):
+@dp.message(CoachStates.choosing_money_direction)
+async def generate_plan(message: Message, state: FSMContext):
+    direction = message.text
+
+    plans = {
+        "⬆ Увеличить доход на работе": [
+            "30 минут развития ключевого навыка",
+            "1 улучшение рабочего процесса",
+            "Записывать достижения"
+        ],
+        "🚀 Новый источник дохода": [
+            "30 минут работы над направлением",
+            "1 контакт с потенциальным клиентом",
+            "15 минут обучения"
+        ],
+        "📈 Запустить проект": [
+            "1 тест гипотезы",
+            "1 разговор с клиентом",
+            "Анализ конкурентов"
+        ],
+        "🧠 Освоить навык": [
+            "40 минут обучения",
+            "Практическое применение",
+            "Мини‑проект каждую неделю"
+        ],
+        "💳 Финансовая дисциплина": [
+            "Записывать расходы",
+            "Планировать бюджет",
+            "Откладывать 10%"
+        ],
+    }
+
+    if direction not in plans:
+        await message.answer("Выбери вариант из кнопок.")
+        return
+
     cursor.execute(
         """
         INSERT INTO users (user_id, goal, first_name)
         VALUES (%s, %s, %s)
         ON CONFLICT (user_id)
-        DO UPDATE SET goal = EXCLUDED.goal,
-                      first_name = EXCLUDED.first_name
+        DO UPDATE SET goal = EXCLUDED.goal
         """,
-        (message.from_user.id, message.text, message.from_user.first_name)
+        (message.from_user.id, direction, message.from_user.first_name)
     )
 
+    for habit in plans[direction]:
+        cursor.execute(
+            "INSERT INTO habits (user_id, name) VALUES (%s, %s)",
+            (message.from_user.id, habit)
+        )
+
     await message.answer(
-        f"✅ Цель сохранена:\n\n"
-        f"🎯 {message.text}\n\n"
-        "Теперь следующий шаг — создать привычку, которая будет приближать тебя к цели.\n\n"
-        "Нажми кнопку:\n"
-        "➕ Добавить привычку",
+        f"✅ Цель установлена: {direction}\n\n"
+        "📌 Привычки созданы автоматически.",
         reply_markup=main_menu
     )
 
@@ -224,161 +241,61 @@ async def save_goal(message: Message, state: FSMContext):
 
 
 # =========================
-# GOAL
-# =========================
-
-@dp.message(F.text == "🎯 Моя цель")
-async def show_goal(message: Message):
-    goal = get_user_goal(message.from_user.id)
-
-    if goal:
-        await message.answer(
-            f"🎯 Твоя текущая цель:\n\n{goal}\n\n"
-            "Двигайся к ней через маленькие ежедневные действия."
-        )
-    else:
-        await message.answer(
-            "У тебя пока нет цели.\n\n"
-            "Нажми 🚀 Начать, чтобы установить цель.",
-            reply_markup=start_keyboard
-        )
-
-
-# =========================
-# ADD HABIT
+# HABITS
 # =========================
 
 @dp.message(F.text == "➕ Добавить привычку")
 async def add_habit(message: Message, state: FSMContext):
-    await state.set_state(Form.waiting_for_habit)
-
-    await message.answer(
-        "Напиши название новой привычки.\n\n"
-        "Примеры:\n"
-        "• Читать 20 минут\n"
-        "• Сделать зарядку\n"
-        "• Не есть сладкое\n"
-        "• Сделать 1 шаг по проекту\n"
-        "• Учить английский 15 минут"
-    )
+    await state.set_state(CoachStates.waiting_for_habit)
+    await message.answer("Напиши название новой привычки:")
 
 
-@dp.message(Form.waiting_for_habit)
+@dp.message(CoachStates.waiting_for_habit)
 async def save_habit(message: Message, state: FSMContext):
-    goal = get_user_goal(message.from_user.id)
-
-    if not goal:
-        await message.answer(
-            "Сначала нужно установить цель.\n\n"
-            "Нажми 🚀 Начать.",
-            reply_markup=start_keyboard
-        )
-        await state.clear()
-        return
-
     cursor.execute(
         "INSERT INTO habits (user_id, name) VALUES (%s, %s)",
         (message.from_user.id, message.text)
     )
 
-    await message.answer(
-        f"✅ Привычка добавлена:\n\n"
-        f"📌 {message.text}\n\n"
-        "Теперь каждый день отмечай её выполнение через кнопку:\n"
-        "✅ Отметить привычку",
-        reply_markup=main_menu
-    )
-
+    await message.answer("✅ Привычка добавлена!", reply_markup=main_menu)
     await state.clear()
 
-
-# =========================
-# LIST HABITS
-# =========================
 
 @dp.message(F.text == "📋 Мои привычки")
 async def list_habits(message: Message):
     cursor.execute(
-        """
-        SELECT id, name, current_streak, best_streak, last_check
-        FROM habits
-        WHERE user_id = %s
-        ORDER BY id
-        """,
+        "SELECT name, current_streak, best_streak FROM habits WHERE user_id = %s",
         (message.from_user.id,)
     )
-
     habits = cursor.fetchall()
 
     if not habits:
-        await message.answer(
-            "У тебя пока нет привычек.\n\n"
-            "Нажми ➕ Добавить привычку.",
-            reply_markup=main_menu
-        )
+        await message.answer("Нет привычек.", reply_markup=main_menu)
         return
 
     text = "📋 Твои привычки:\n\n"
-
-    for habit_id, name, current_streak, best_streak, last_check in habits:
-        status = "✅ сегодня выполнено" if last_check == date.today() else "⏳ сегодня ещё не отмечено"
-
-        text += (
-            f"{habit_id}. {name}\n"
-            f"   🔥 Серия: {current_streak} дней\n"
-            f"   🏆 Рекорд: {best_streak} дней\n"
-            f"   {status}\n\n"
-        )
+    for name, current, best in habits:
+        text += f"{name}\n🔥 {current} | 🏆 {best}\n\n"
 
     await message.answer(text, reply_markup=main_menu)
 
 
-# =========================
-# CHECK HABIT
-# =========================
-
 @dp.message(F.text == "✅ Отметить привычку")
 async def check_habit(message: Message):
     cursor.execute(
-        """
-        SELECT id, name, last_check
-        FROM habits
-        WHERE user_id = %s
-        ORDER BY id
-        """,
+        "SELECT id, name FROM habits WHERE user_id = %s",
         (message.from_user.id,)
     )
-
     habits = cursor.fetchall()
 
-    if not habits:
-        await message.answer(
-            "У тебя пока нет привычек.\n\n"
-            "Сначала нажми ➕ Добавить привычку.",
-            reply_markup=main_menu
-        )
-        return
-
-    buttons = []
-
-    for habit_id, name, last_check in habits:
-        if last_check == date.today():
-            button_text = f"✅ {name}"
-        else:
-            button_text = f"⬜ {name}"
-
-        buttons.append([
-            InlineKeyboardButton(
-                text=button_text,
-                callback_data=f"check_{habit_id}"
-            )
-        ])
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    buttons = [
+        [InlineKeyboardButton(text=name, callback_data=f"check_{hid}")]
+        for hid, name in habits
+    ]
 
     await message.answer(
-        "Выбери привычку, которую выполнил сегодня:",
-        reply_markup=keyboard
+        "Выбери привычку:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
 
 
@@ -388,138 +305,76 @@ async def mark_habit(callback: CallbackQuery):
     today = date.today()
 
     cursor.execute(
-        """
-        SELECT current_streak, best_streak, last_check, name
-        FROM habits
-        WHERE id = %s
-        """,
+        "SELECT current_streak, best_streak, last_check, name FROM habits WHERE id=%s",
         (habit_id,)
     )
+    current, best, last, name = cursor.fetchone()
 
-    habit = cursor.fetchone()
-
-    if not habit:
-        await callback.answer("Привычка не найдена")
-        return
-
-    current_streak, best_streak, last_check, habit_name = habit
-
-    if last_check == today:
+    if last == today:
         await callback.answer("Сегодня уже отмечено ✅")
         return
 
-    if last_check == today - timedelta(days=1):
-        current_streak += 1
+    if last == today - timedelta(days=1):
+        current += 1
     else:
-        current_streak = 1
+        current = 1
 
-    if current_streak > best_streak:
-        best_streak = current_streak
+    if current > best:
+        best = current
 
     cursor.execute(
-        """
-        UPDATE habits
-        SET current_streak = %s,
-            best_streak = %s,
-            last_check = %s
-        WHERE id = %s
-        """,
-        (current_streak, best_streak, today, habit_id)
+        "UPDATE habits SET current_streak=%s, best_streak=%s, last_check=%s WHERE id=%s",
+        (current, best, today, habit_id)
     )
 
-    await callback.answer("✅ Отмечено")
+    # XP
+    cursor.execute("SELECT xp FROM users WHERE user_id=%s", (callback.from_user.id,))
+    xp = cursor.fetchone()[0] or 0
+    xp += 10
+    cursor.execute("UPDATE users SET xp=%s WHERE user_id=%s", (xp, callback.from_user.id))
 
+    level, next_level = get_level_data(xp)
+
+    await callback.answer("✅")
     await callback.message.edit_text(
-        f"🔥 Привычка выполнена!\n\n"
-        f"📌 {habit_name}\n\n"
-        f"Текущая серия: {current_streak} дней\n"
-        f"Лучший результат: {best_streak} дней\n\n"
-        "Продолжай. Главное — не идеальность, а движение."
+        f"🔥 {name} выполнена!\n\n"
+        f"Серия: {current}\n"
+        f"⭐ XP: {xp}\n"
+        f"🎮 Уровень: {level[1]}"
     )
 
 
 # =========================
-# STATS
+# LEVEL
 # =========================
 
-@dp.message(F.text == "📊 Статистика")
-async def stats(message: Message):
-    user_id = message.from_user.id
-    today = date.today()
+@dp.message(F.text == "🏅 Мой уровень")
+async def show_level(message: Message):
+    cursor.execute("SELECT xp FROM users WHERE user_id=%s", (message.from_user.id,))
+    xp = cursor.fetchone()[0] or 0
 
-    cursor.execute(
-        "SELECT COUNT(*) FROM habits WHERE user_id = %s",
-        (user_id,)
-    )
-    total_habits = cursor.fetchone()[0]
+    current_level, next_level = get_level_data(xp)
 
-    cursor.execute(
-        """
-        SELECT COUNT(*)
-        FROM habits
-        WHERE user_id = %s AND last_check = %s
-        """,
-        (user_id, today)
-    )
-    completed_today = cursor.fetchone()[0]
+    if next_level:
+        xp_current = current_level[0]
+        xp_next = next_level[0]
 
-    cursor.execute(
-        """
-        SELECT MAX(best_streak)
-        FROM habits
-        WHERE user_id = %s
-        """,
-        (user_id,)
-    )
-    best_streak = cursor.fetchone()[0] or 0
+        xp_into = xp - xp_current
+        xp_needed = xp_next - xp_current
 
-    if total_habits == 0:
-        await message.answer(
-            "📊 Статистика пока пустая.\n\n"
-            "Добавь первую привычку через ➕ Добавить привычку.",
-            reply_markup=main_menu
+        bar = progress_bar(xp_into, xp_needed)
+
+        text = (
+            f"🎮 {current_level[1]}\n"
+            f"⭐ XP: {xp}\n\n"
+            f"{bar}\n"
+            f"{xp_into}/{xp_needed} XP\n"
+            f"Следующий: {next_level[1]}"
         )
-        return
+    else:
+        text = f"👑 Максимальный уровень!\n⭐ XP: {xp}"
 
-    percent = round((completed_today / total_habits) * 100)
-
-    await message.answer(
-        f"📊 Твоя статистика на сегодня:\n\n"
-        f"✅ Выполнено: {completed_today} из {total_habits}\n"
-        f"📈 Прогресс дня: {percent}%\n"
-        f"🏆 Лучший streak: {best_streak} дней\n\n"
-        "Даже один маленький шаг сегодня — это вклад в будущего тебя.",
-        reply_markup=main_menu
-    )
-
-
-# =========================
-# TEST MORNING
-# =========================
-
-@dp.message(Command("testmorning"))
-async def test_morning(message: Message, bot: Bot):
-    goal = get_user_goal(message.from_user.id)
-
-    await send_morning_message_to_user(
-        bot=bot,
-        user_id=message.from_user.id,
-        first_name=message.from_user.first_name,
-        goal=goal
-    )
-
-
-# =========================
-# FALLBACK
-# =========================
-
-@dp.message()
-async def fallback(message: Message):
-    await message.answer(
-        "Я пока понимаю только кнопки меню 👇\n\n"
-        "Выбери действие:",
-        reply_markup=main_menu
-    )
+    await message.answer(text, reply_markup=main_menu)
 
 
 # =========================
