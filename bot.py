@@ -1,27 +1,28 @@
 import asyncio
 import os
-import sqlite3
+import psycopg2
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 
 TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 dp = Dispatcher()
 
-# --- БАЗА ДАННЫХ ---
-conn = sqlite3.connect("database.db")
+# --- Подключение к PostgreSQL ---
+conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     goal TEXT
 )
 """)
 conn.commit()
 
-# --- КНОПКА ---
+# --- Кнопка ---
 start_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🚀 Начать")]
@@ -39,17 +40,10 @@ async def cmd_start(message: Message):
         reply_markup=start_keyboard
     )
 
-@dp.message(F.text == "🚀 Начать")
-async def ask_goal(message: Message):
-    await message.answer(
-        "Отлично 💪\n\n"
-        "Напиши свою главную цель на ближайшие 3 месяца:"
-    )
-
 @dp.message(Command("goal"))
 async def show_goal(message: Message):
     cursor.execute(
-        "SELECT goal FROM users WHERE user_id = ?",
+        "SELECT goal FROM users WHERE user_id = %s",
         (message.from_user.id,)
     )
     result = cursor.fetchone()
@@ -61,10 +55,20 @@ async def show_goal(message: Message):
     else:
         await message.answer(
             "У тебя пока нет сохранённой цели.\n\nНажми 🚀 Начать"
-        )@dp.message()
+        )
+
+@dp.message(F.text == "🚀 Начать")
+async def ask_goal(message: Message):
+    await message.answer(
+        "Отлично 💪\n\n"
+        "Напиши свою главную цель на ближайшие 3 месяца:"
+    )
+
+@dp.message()
 async def save_goal(message: Message):
     cursor.execute(
-        "INSERT OR REPLACE INTO users (user_id, goal) VALUES (?, ?)",
+        "INSERT INTO users (user_id, goal) VALUES (%s, %s) "
+        "ON CONFLICT (user_id) DO UPDATE SET goal = EXCLUDED.goal",
         (message.from_user.id, message.text)
     )
     conn.commit()
@@ -72,7 +76,7 @@ async def save_goal(message: Message):
     await message.answer(
         f"✅ Цель сохранена:\n\n"
         f"🎯 {message.text}\n\n"
-        "Теперь она сохранена в базе данных."
+        "Теперь она хранится в PostgreSQL 💾"
     )
 
 async def main():
